@@ -1,0 +1,206 @@
+#+title: Auto Pipeline Runner
+
+* auto_pipeline_runner
+
+#+begin_src python -r :tangle ../auto_pipeline_runner.py :comments both :shebang "#!/usr/bin/env python3"
+import requests
+import os
+import subprocess
+import argparse
+from itertools import compress
+#+end_src
+
+#+begin_src python -r :tangle ../auto_pipeline_runner.py :comments both
+def check_syncthing_completion(url, api_key):
+    headers = {"X-API-Key": api_key}
+    response = requests.get(url, headers=headers)
+    if response and response["completion"] == 100 and response["needItems"] == 0:
+        return True
+#+end_src
+
+#+begin_src python -r :tangle ../auto_pipeline_runner.py :comments both
+def start_run(dir_name, script_path, fastq_dir_base, result_dir_base):
+    if dir_name:
+        input_dir = os.path.join(fastq_dir_base, dir_name)
+        output_dir = os.path.join(result_dir_base, dir_name)
+        command = f"tsp -L {dir_name} {script_path} --input_dir {input_dir} --output_dir {output_dir}"
+        os.system(command)
+#+end_src
+
+#+begin_src python -r :tangle ../auto_pipeline_runner.py :comments both
+def get_new_dirs(fastq_dir_base, result_dir_base):
+    processing_dirs = subprocess.check_output("tsp -l | sed 1d | grep -oP '(?<=\[)[^\]]+'", shell=True).decode("utf-8").split()
+    new_dirs = set(os.listdir(fastq_dir_base)) - set(os.listdir(result_dir_base)) - set(processing_dirs)
+    return new_dirs
+#+end_src
+
+TODO: check if url and api_key are provided together. Örn: https://stackoverflow.com/a/27411540
+
+#+begin_src python -r :tangle ../auto_pipeline_runner.py :comments both
+def main():
+    parser = argparse.ArgumentParser(description="Syncthing Completion Checker")
+    parser.add_argument("url", help="URL of the Syncthing API", required=False)
+    parser.add_argument("api_key", help="Syncthing API key", required=False)
+    parser.add_argument("script_path", help="Path to the Nextflow script", required=True)
+    parser.add_argument("input_dir_base", help="Base directory for input directories", required=True)
+    parser.add_argument("result_dir_base", help="Base directory for output directories", required=True)
+
+    args = parser.parse_args()
+
+    check_syncthing = False
+
+    if check_syncthing:
+        if check_syncthing_completion(args.url, args.api_key):
+            new_dirs = get_new_dirs(args.input_dir_base, args.result_dir_base)
+    else:
+        new_dirs = check_completion(args.input_dir_base, args.result_dir_base)
+
+    modifications = map(
+        lambda new_dir: bool(
+            subprocess.check_output(
+                f"./check_file_modification.sh {new_dir} 10",
+                shell=True
+            ).decode("utf-8")
+        ),
+        new_dirs
+    )
+
+    map(
+        lambda dir_name: start_run(dir_name, args.script_path, args.input_dir_base, args.result_dir_base),
+        compress(new_dirs, modifications)
+    )
+#+end_src
+
+#+begin_src python -r :tangle ../auto_pipeline_runner.py :comments both
+if __name__ == "__main__":
+    main()
+#+end_src
+
+* Check file modifications
+
+https://sharats.me/posts/shell-script-best-practices/
+
+#+begin_src shell -r :tangle ../check_file_modification.sh :comments both :shebang "#!/usr/bin/bash"
+set -o errexit
+set -o nounset
+set -o pipefail
+
+if [[ "${TRACE-0}" == "1" ]]; then
+    set -o xtrace
+fi
+
+
+usage() {
+    echo 'Usage: check_file_modification.sh [OPTIONS] input_dir
+
+Description:
+This script checks if any file in the specified input directory has been modified within a certain period. It compares the last modified time and size of a file before and after a delay, and confirms if there were no changes during that time.
+
+Options:
+-h, --help          Display this help message and exit.
+-V, --version       Show version and exit.
+
+Arguments:
+-d --dir           The directory path where files are located. This directory will be scanned for files to check for modification.
+-i --interval      The inverval for which the checking for the modification will be performed. Default is 5 seconds.
+
+Example:
+./check_file_modification.sh /path/to/input_directory
+
+This command will check if any file in the specified input directory (/path/to/input_directory) has been modified within a certain period.
+'
+}
+
+if [[ "${1-}" =~ ^-*h(elp)?$ ]]; then
+    usage
+    exit
+fi
+
+# cd "$(dirname "$0")"
+
+PARSED_ARGUMENTS=$(getopt -a -o d:i: -l dir:,interval: -- "$@")
+VALID_ARGUMENTS=$?
+if [ "$VALID_ARGUMENTS" != "0" ]; then
+    usage
+fi
+
+interval=5
+
+eval set -- "$PARSED_ARGUMENTS"
+while :; do
+    case "$1" in
+    -d | --dir)
+        input_dir="$2"
+        shift 2
+        ;;
+    -i | --interval)
+        interval="$2"
+        shift 2
+        ;;
+    -h | --help)
+        usage
+        ;;
+    -V )
+        echo "v0.0.1"
+        exit
+        ;;
+    # -- means the end of the arguments; drop this, and break out of the while loop
+    --)
+        shift
+        break
+        ;;
+    # If invalid options were passed, then getopt should have reported an error,
+    # which we checked as VALID_ARGUMENTS when getopt was called...
+    *)
+        echo "Unexpected option: $1 - this should not happen."
+        usage
+        ;;
+    esac
+done
+
+if [ -z "${input_dir:-}" ]; then
+    usage;
+    exit 1;
+fi
+#+end_src
+
+** get last modified file
+
+This function get the last modified file modified from https://www.baeldung.com/linux/recently-changed-files.
+Find command finds all the files with =-type f= and prints the last modified date with =%T@= as seconds till Jan 1970.
+The files are sorted as numeric seconds.
+Last modified file is selected with =tail=.
+Path of the file is gathered with =cut=.
+
+#+begin_src shell -r :tangle ../check_file_modification.sh :comments both
+get_last_modified_file() {
+    echo $(find $input_dir -type f -printf "%T@ %Tc %p\n" 2>/dev/null |
+        sort -n |
+        tail -n1 |
+        cut -d" " -f9)
+}
+#+end_src
+
+** main
+https://www.baeldung.com/linux/check-if-file-write-in-progress
+
+#+begin_src shell -r :tangle ../check_file_modification.sh :comments both
+main () {
+    before_last_modified_file=$(get_last_modified_file)
+    before_bytes=$(stat -c%s "$before_last_modified_file")
+    sleep $interval
+    after_last_modified_file=$(get_last_modified_file)
+    after_bytes=$(stat -c%s "$after_last_modified_file")
+    echo "$before_last_modified_file $before_bytes $after_last_modified_file $after_bytes"
+    if [ "$before_last_modified_file" = "$after_last_modified_file" ]; then
+        if [ $before_bytes -eq $after_bytes ]; then
+            echo "True";
+        else
+            echo "False";
+        fi
+    else
+        echo "False";
+    fi
+}
+main "$@"
+#+end_src

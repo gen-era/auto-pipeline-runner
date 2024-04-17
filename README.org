@@ -1,0 +1,15 @@
+#+title: Readme
+
+* Installation
+
+#+begin_src shell
+git clone <repo>
+#+end_src
+
+* How to use
+
+#+begin_src shell
+auto_pipeline_runner.py --url --api_key --script_path --input_dir_base --result_dir_base
+#+end_src
+
+** setting up cronjobs
