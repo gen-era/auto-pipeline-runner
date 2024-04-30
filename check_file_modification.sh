@@ -101,10 +101,10 @@ fi
 
 # [[file:docs/auto_pipeline_runner.org::*get last modified file][get last modified file:1]]
 get_last_modified_file() {
-    echo $(find $input_dir -type f -printf "%T@ %Tc %p\n" 2>/dev/null |
+    echo $(find $input_dir -type f -printf "%T@\t%Tc\t%p\n" 2>/dev/null |
         sort -n |
         tail -n1 |
-        cut -d" " -f9)
+        cut -d$'\t' -f3)
 }
 # get last modified file:1 ends here
 
@@ -119,7 +119,7 @@ main () {
     sleep $interval
     after_last_modified_file=$(get_last_modified_file)
     after_bytes=$(stat -c%s "$after_last_modified_file")
-    echo "$before_last_modified_file $before_bytes $after_last_modified_file $after_bytes"
+    # echo "$before_last_modified_file $before_bytes $after_last_modified_file $after_bytes"
     if [ "$before_last_modified_file" = "$after_last_modified_file" ]; then
         if [ $before_bytes -eq $after_bytes ]; then
             echo "True";
